@@ -1,0 +1,7 @@
+arviz
+matplotlib
+numpy==1.26
+openpyxl
+pandas
+pymc-marketing==0.15
+scikit-learn
