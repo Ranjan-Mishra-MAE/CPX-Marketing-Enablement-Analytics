@@ -33,17 +33,20 @@ Never sacrifice business correctness for query performance.
 
 Before writing analytical SQL, inspect the relevant knowledge base files.
 
-The repository may contain:
+This repo has no `knowledge/` folder. The knowledge base is one file plus one skill:
 
-```text
-knowledge/
-├── business_rulebook.md
-├── kpi_dictionary.md
-├── data_dictionary.md
-├── transformation_rules.md
-├── methodology_catalog.md
-└── rule_conflicts.md
-```
+| Topic | Where it lives |
+| --- | --- |
+| Business rules | `.claude/skills/cpx-business-rulebook/references/CPX_Business_Analytics_Rulebook.md` §3 (BR-xxx) |
+| KPI dictionary | Rulebook §4 (KPI-xx) |
+| Data dictionary, grain, standard joins | Rulebook §2 |
+| Populations | Rulebook §5 (P-xx) |
+| Transformations, buckets | Rulebook §6 (T-xx), §7 |
+| Date rules | Rulebook §8 (TL-xx) |
+| Methodologies, models | Rulebook §9–10 (M-xx) |
+| Data quality, known defects | Rulebook §11 (DQ-xx) |
+| Rule conflicts, assumptions, open questions | Rulebook §12–14 (CF-xx, A-xx) |
+| CineClub dashboard rules and known inconsistencies | `.claude/skills/cineclub-coding/SKILL.md` (CC-xx, CD-xx) |
 
 Treat these files as the primary reference for:
 

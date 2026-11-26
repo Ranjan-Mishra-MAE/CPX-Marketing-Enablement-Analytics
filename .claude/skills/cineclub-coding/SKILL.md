@@ -5,7 +5,7 @@ description: CineClub coding rules for the dashboard production scripts and any 
 
 # CineClub — AI-Assisted Coding Instructions
 
-Nov 26, 2026 · Ranjan · built from `CPX-CineClub/CineClub Dashboard Scripts/` (Production + Legacy), the CPX Coding Agent project instructions and `CPX_Business_Analytics_Rulebook.md`
+Nov 26, 2026 · Ranjan · built from `CPX-CineClub/CineClub Dashboard Scripts/` (Production + Legacy), the CPX Coding Agent project instructions and `CPX_Business_Analytics_Rulebook.md`. Re-checked line by line against the 7 production scripts on Nov 26, 2026 (CD-23 to CD-27 added from that pass)
 
 ---
 
@@ -41,6 +41,10 @@ All output tables live in `data_exploration_hub.marketing_hub`. All sources are 
 
 Legacy (`Legacy/`) holds the hard-coded, single-period "Verified" versions these were built from, sample-data notebooks, and the Guest Services tables (`GS_CC_Members`, `GS_CC_Transactions` — see rulebook BR-051, DQ-15).
 
+**Start month when the target is empty:** only the ticket table has a default (`COALESCE(..., DATE'2025-01-01')`). The other loaders start from `add_months(MAX(...), 1)` (daily: `date_add(MAX(snapshot_date), 1)`), which is NULL on an empty table, so the loop never runs. Seed the first period (or use rebuild mode in monthly signups) when creating a new table.
+
+**Missing-snapshot handling differs by script:** only monthly signups has a fallback (§5). Daily signups, demographics and tickets read the exact snapshot date (see CD-15, CD-23, CD-24).
+
 ---
 
 ## 2. Database rules
@@ -50,20 +54,22 @@ Legacy (`Legacy/`) holds the hard-coded, single-period "Verified" versions these
 | Table | Key / grain | CineClub fields used | Notes |
 | --- | --- | --- | --- |
 | `marketing.mkt_subscription_events` | one row per event | cc_user_profile_id, event_type, plan_id, reporting_datetime, record_occurred_at, changed, changed_from, changed_to, current_term_start_datetime, current_term_end_datetime, subtotal | **Official source for all membership flows** (BR-027). Never use the legacy name `marketing.subscription_events` |
-| `marketing.mkt_subscriber_profile_snapshot` | cc_user_profile_id × snapshot_date_id | cde_id, plan_id, renewal_status, recognitions_left, recognitions_left_10_99, recognitions_redeemed | Daily member status. Never use legacy `marketing.subscriber_profile_snapshot` |
+| `marketing.mkt_subscriber_profile_snapshot` | cc_user_profile_id × snapshot_date_id | cde_id, plan_id, renewal_status, recognitions_left, recognitions_left_10_99 (`recognitions_redeemed` is not used by the production scripts; the GS tables use it, BR-051) | Daily member status. Never use legacy `marketing.subscriber_profile_snapshot` |
 | `cpx_dataanalytics_silver.cineclub.gifting` | one row per gift code | purchaser_id, redeemer_id, is_redeemed, purchase_date, redemption_date | **Silver** catalog. Timestamps are UTC |
 | `customer360.c360_f_rfm_model` | CDE_ID × SnapshotDateId | Segment | Standard RFM (BR-034) |
 | `customer360.c360_f_transaction` | one row per line item | CDE_ID, VisitDateId, LocationId, ItemSkey, TicketTypeSkey, sessionskey, film_id, Transaction_Number, Quantity, Net_Revenue, CineClubFLAG, SCENEFLAG, TicketFLAG, ConcessionFLAG, CineClub_Discount_Type_ID | Refunds are negative Quantity |
-| `customer360.cpx_d_customer` | one row per cde_id (dedupe in code) | cc_user_profile_id, cde_id, gender_text, age_cohort_id, province | |
+| `customer360.cpx_d_customer` | one row per cde_id expected; production does **not** dedupe it (CD-11) — dedupe in new code | cc_user_profile_id, cde_id, gender_text, age_cohort_id, province | |
 | `customer360.cpx_d_location / cpx_d_date / cpx_d_item / cpx_d_session / cpx_d_ticket_type / cpx_d_film` | see rulebook §2 | | |
 
 ### 2.2 Identity bridging
 
 - **Subscription world** is keyed by `cc_user_profile_id`. **Transaction world** is keyed by `CDE_ID`.
-- The only bridge used in production is the **snapshot**: `snapshot.cc_user_profile_id → snapshot.cde_id`.
+- The bridge to `cde_id` (for RFM and transactions) is the **snapshot**: `snapshot.cc_user_profile_id → snapshot.cde_id`.
+- Demographics also joins `cpx_d_customer` **directly** on `c.cc_user_profile_id = p.cc_user_profile_id` for sign-ups and ptd_balance attributes (gender, age, province).
 - `snapshot.cde_id` is stored as a string; transaction/RFM `CDE_ID` is numeric. Production casts explicitly:
   - RFM join: `CAST(snapshot.cde_id AS INT) = rfm.CDE_ID`
-  - Customer join from transactions: `CAST(c.cde_id AS STRING) = p.cde_id`
+  - Scene balance vs active CC (demographics): `CAST(sc.CDE_ID AS STRING) = ab.cde_id`
+  - Customer join for scene_balance (demographics): `CAST(c.cde_id AS STRING) = p.cde_id`
   Keep these casts. Do not rely on implicit casting in new code.
 - Gift ids (`purchaser_id`, `redeemer_id`) are `cc_user_profile_id` values.
 - **CDE lookup with fallback** (used for RFM tagging of flows): take the cde_id from the period-end snapshot; for members missing there (e.g. lapsed), fall back to the prior period-end snapshot.
@@ -115,7 +121,7 @@ These are exactly what `cc_daily_signups` / `cc_monthly_signups` compute. Daily 
 | CC-06 | Exits | `subscription_cancelled`, by plan, `changed IS NOT TRUE`, `cc_user_profile_id IS NOT NULL` |
 | CC-07 | Upgrades initiated | `subscription_changed`, `changed = TRUE`, `changed_from != changed_to`, `changed_to='annual1'`, dated by `from_unixtime(record_occurred_at)` (BR-056) |
 | CC-08 | Upgrades took effect | `subscription_cancelled`, `plan_id='monthly1'`, `changed = TRUE`, dated by `reporting_datetime` |
-| CC-09 | Annual renewed | `payment_succeeded` on `annual1` in period; member's annual start = MIN(first annual `subscription_created`, first upgrade-took-effect); `DATEDIFF(payment_date, start) >= 360` and `MOD(DATEDIFF, 365) <= 5 OR >= 360`; excludes the period's annual sign-ups, annual exits and upgrades took effect (BR-028). Monthly version anchors each payment on its own date |
+| CC-09 | Annual renewed | `payment_succeeded` on `annual1` in period; member's annual start = MIN(first annual `subscription_created`, first upgrade-took-effect); `DATEDIFF(payment_date, start) >= 360` and `MOD(DATEDIFF, 365) <= 5 OR >= 360`; excludes the period's annual sign-ups, annual exits and upgrades took effect (BR-028). Monthly version anchors each payment on its own date. This is a renewal *count*; renewal-rate scripts use other definitions (rulebook CF-16) |
 | CC-10 | Monthly dunning | Latest monthly1 payment event (as of period end) is `payment_failed`, dated within **15** days of period end, failure date = term start date, no later successful term start |
 | CC-11 | Annual dunning | Same as CC-10 on `annual1` with **14** days (open conflict CF-15 — keep 15/14 until the owner's revised script arrives) |
 | CC-12 | Annual lapsed | In prior snapshot with `plan_id='annual1'` (**no status filter**), not in current snapshot `annual1` nor annual dunning, and no non-upgrade annual `subscription_cancelled` to date |
@@ -241,11 +247,11 @@ END;
 Rules:
 
 - **Always** DELETE the period before INSERT (re-runs must not duplicate).
-- **Always** name the INSERT column list in the SELECT's order (the ticket table's SELECT order differs from its table order).
+- Name the INSERT column list in the SELECT's order. Only daily signups and the ticket table do this today; the ticket script's header explains why (its SELECT order differs from the table order). Monthly signups, demographics, concessions, top films and visitation insert positionally — when editing those, keep the SELECT column order exactly as is.
 - The gate must include every source with lag: snapshot and RFM for anything RFM- or status-based; transactions-only tables can gate on yesterday.
 - Parameterise only the period; never hard-code dates inside the CTEs (that is what `Legacy/` did).
 - Rebuild mode (monthly signups): `v_rebuild_from` / `v_rebuild_to` as month starts; leave NULL for append.
-- Missing snapshots: follow the monthly signups fallback — latest snapshot within the last 3 days of the month (EOM) and within the 4 days before month start (prior EOM); return NULL (not 0) for metrics that depend on a missing snapshot.
+- Missing snapshots: follow the monthly signups fallback — EOM = `MAX(snapshot_date_id)` between `last_day − 3` and `last_day`; prior EOM = `MAX(snapshot_date_id)` between `month_start − 4` and `month_start − 1` (both ranges inclusive). Return NULL (not 0) for metrics that depend on a missing snapshot: monthly signups NULLs annual_lapsed and gift_lapsed unless both snapshots exist, and the gift net-new / returning-from columns unless the prior snapshot exists. If neither snapshot exists it writes only the `All` row (`WHERE c.rfm_category = 'All' OR sc.has_eom OR sc.has_prior`).
 
 ---
 
@@ -269,7 +275,7 @@ These exist in the current production scripts. When you touch one of these scrip
 | CD-12 | Demographics age | Uses `age_cohort_id`; MOM/rulebook computes age from `date_of_birth_masked` (BR-041) | Bin counts can differ from MOM |
 | CD-13 | Scene balance window | `add_months(month_end,-12)` to month_end inclusive = 12 months + 1 day, any venue (incl. LBE) | Slightly wider than P12M theatre |
 | CD-14 | Ticket type join | `cpx_d_ticket_type` not deduped on tickettypeskey (DQ-05) | Possible ticket inflation if the dimension has duplicates |
-| CD-15 | Tickets in market | No test-account ceiling on recognitions_left (BR-025); exact month-end snapshot only, no fallback (Oct 2025 snapshot missing) | Test accounts included; Oct 2025 in-market = NULL |
+| CD-15 | Tickets in market | No test-account ceiling on recognitions_left (BR-025); exact month-end snapshot only, no fallback (Oct 2025 snapshot missing). The loader starts at 2025-01-01 but snapshot history starts 2025-06-18 | Test accounts included; in-market = NULL for Oct 2025 and for Jan–May 2025 |
 | CD-16 | Concession transactions | `COUNT(DISTINCT Transaction_Number)` without location/date — numbers may repeat across locations | Possible under-count of transactions |
 | CD-17 | Concessions script | `active_cc_members` CTE is defined but never used (dead code) | None — mention, don't delete |
 | CD-18 | First-timers | Defined over **all-time** events, not as of the period | Backfills can reclassify past "first-time" sign-ups as "returning" |
@@ -277,6 +283,11 @@ These exist in the current production scripts. When you touch one of these scrip
 | CD-20 | Annual lapsed | Prior-snapshot annual base has no status filter; gift lapsed does | Asymmetric definitions |
 | CD-21 | Dunning | 15 days monthly vs 14 days annual (CF-15, open) | Keep until owner provides revised script |
 | CD-22 | snapshot_date_id type | Compared as string in some scripts, INT in others | Works via implicit cast; keep consistent within a script |
+| CD-23 | Daily signups — missing snapshot | No snapshot guard: the day's and prior day's snapshots are read with `snapshot_date_id = date_format(...)` and every metric is `COALESCE(cnt, 0)`. Unlike monthly signups, nothing is set to NULL | On a day whose snapshot (or the prior day's) is missing — e.g. 2025-10-31 / 2025-11-01 — lapsed and gift net-new / returning-from are computed against an empty snapshot and load as numbers, not NULL (missing current day → annual/gift lapsed can spike; missing prior day → lapsed = 0 and every gift purchaser/redeemer counts as net new). RFM tagging still has the prior-day cde fallback |
+| CD-24 | Demographics — missing snapshot | Exact month-end snapshot for `active_balance_cde` and the RFM lookup; no fallback | For a month whose month-end snapshot is missing (Oct 2025), scene_balance does not exclude CC members, and CC members not in the prior month-end snapshot (e.g. that month's new sign-ups) fall to Dormant |
+| CD-25 | Demographics — scene_balance | `scene_active_cde` has no `CDE_ID IS NOT NULL` filter (the anti-join keeps a NULL key) | If any SCENEFLAG line has NULL CDE_ID, scene_balance gains 1 row in gender_other, age_unknown, prov_other and rfm_dormant |
+| CD-26 | Visitation — CC × Scene join | `exh_rows` / `lbe_rows` INNER JOIN CC and Scene results on period_type × rfm_segment; no zero-fill | A segment present for only one population is dropped for both in that period |
+| CD-27 | Top films | `ROW_NUMBER() OVER (ORDER BY cc_tickets DESC)` has no tie-breaker; inner join to `cpx_d_film` | Tied titles can swap rank 5/6 between runs; ticket lines without a film match are dropped |
 
 ---
 
@@ -288,6 +299,7 @@ Use the general validation rules first. Then run the checks below that apply. Ex
 
 ```sql
 -- 1. 11 rows per period, no duplicates
+--    (monthly: a month with neither EOM nor prior-EOM snapshot legitimately has 1 row, 'All')
 SELECT month_start, COUNT(*) AS rows, COUNT(DISTINCT rfm_category) AS cats
 FROM data_exploration_hub.marketing_hub.cc_monthly_signups
 GROUP BY month_start HAVING COUNT(*) <> 11 OR COUNT(DISTINCT rfm_category) <> 11;
@@ -371,3 +383,4 @@ WHERE tickets_regular + tickets_upgrades <> tickets_free + tickets_paid         
 4. Scene in the visitation table: switch to non-CC Scene (CD-05)?
 5. Tickets credited (CC-67): annual members — should each payment count once, or should monthly recognition credits be counted?
 6. Revised dunning / sign-up scripts (CF-15).
+7. Daily signups and demographics: add the monthly-signups missing-snapshot guard (CD-23, CD-24), or leave as is?
