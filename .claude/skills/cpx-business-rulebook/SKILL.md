@@ -26,4 +26,6 @@ How to apply it:
 - When the owner supplies script logic for an analysis, follow it exactly; flag differences from the rulebook, don't apply them.
 - Before reusing an older notebook, check §11 for defects listed against it.
 - Never invent a rule the rulebook doesn't establish — say it's missing and ask.
+- Open conflicts (§12) are not settled: CF-15 (dunning look-back) and CF-16 (three annual renewal-rate definitions). Ask which to use before computing either.
+- The Scene vs Connect script behind BR-061 / KPI-29 was supplied in chat and is not in the repo; the rulebook entries are its only record.
 - For CineClub dashboard work, also load the `cineclub-coding` skill; for workflow and validation format, `cpx-analytics-coding`.
